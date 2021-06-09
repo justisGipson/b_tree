@@ -38,6 +38,7 @@ impl KeyValuePair {
 }
 
 // NodeType represents different node types in the BTree
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum NodeType {
   // Internal nodes contain a vector of pointers to their children and a vector of keys
   Internal(Vec<Offset>, Vec<Key>),
