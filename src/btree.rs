@@ -125,7 +125,7 @@ impl BTree {
     self.insert_non_full(&mut root, self.root_offset.clone(), kv)
   }
 
-  /// insert_non_full (recursively) finds a node rooted at a fiven non-full node
+  /// insert_non_full (recursively) finds a node rooted at a given non-full node
   /// to insert a given kv pair
   fn insert_non_full(
     &mut self,
@@ -210,6 +210,220 @@ impl BTree {
   fn delete_key_from_subtree(&mut self, key: Key, offset: &Offset) -> Result<(), Error> {
     let page = self.pager.get_page(offset)?;
     let mut node = Node::try_from(page)?;
+    match &mut node.node_type {
+        NodeType::Leaf(ref mut pairs) => {
+            let node_idx = pairs
+                .binary_search_by_key(&key, |kv| Key(kv.key.clone()))
+                .map_err(|_| Error::KeyNotFound)?;
+            pairs.remove(node_idx);
+            // Check for underflow - if it occurs,
+            // we need to merge with a sibling.
+            // this can only occur if node is not the root (as it cannot "underflow").
+            // continue recursively up the tree.
+            self.merge_if_needed(node, &key)?;
+        }
+        NodeType::Internal(children, keys) => {
+            let node_idx = keys.binary_search(&key).unwrap_or_else(|x| x);
+            // Retrieve child page from disk and deserialize.
+            // And continue recursively.
+            let child_offset = children.get(node_idx).ok_or(Error::UnexpectedError)?;
+            return self.delete_key_from_subtree(key, child_offset);
+        }
+        NodeType::Unexpected => return Err(Error::UnexpectedError),
+    }
+    Ok(())
+}
 
+  /// merge if_needed checks the node for underflow (following a removal of a key)
+  /// if it underflows it is merged with a sibling node, and then called recursively
+  /// up the tree
+  fn merge_if_needed(&mut self, node: Node, key: &Key) -> Result<(), Error> {
+    if self.is_node_underflow(&node)? {
+      // fetch the sibling from the parent
+      // could be quicker is sibling pointers are implemented
+      let parent_offset = node.parent_offset.clone().ok_or(Error::UnexpectedError)?;
+      let parent_page = self.pager.get_page(&parent_offset)?;
+      let mut parent_node = Node::try_from(parent_page)?;
+      // the parent has to be in "internal" node
+      match parent_node.node_type {
+        NodeType::Internal(ref mut children, ref keys) => {
+          let idx = keys.binary_search(&key).unwrap_or_else(|x| x);
+          // sibling is in idx <- 1 as the above index led
+          // the downward search to node
+          let sibling_idx;
+          if idx == keys.len() - 1 {
+            sibling_idx = idx - 1;
+          } else {
+            sibling_idx = idx + 1;
+          }
+
+          let sibling_offset = children.get(sibling_idx).ok_or(Error::UnexpectedError)?;
+          let sibling_page = self.pager.get_page(sibling_offset)?;
+          let sibling = Node::try_from(sibling_page)?;
+          let merged_node = self.merge(node, sibling)?;
+          let merged_node_offset = self.pager.write_page(Page::try_from(&merged_node)?)?;
+          // remove old nodes
+          children.remove(idx);
+          children.remove(sibling_idx);
+          // write new node in place
+          let merged_node_idx = cmp::min(idx,sibling_idx);
+          children.insert(merged_node_idx, merged_node_offset);
+          // write the updated parent back to disk and continue up the tree
+          self.pager.write_page_at_offset(Page::try_from(&parent_node)?, &parent_offset)?;
+          return self.merge_if_needed(parent_node,&key);
+        }
+        _ => return Err(Error::UnexpectedError),
+      }
+    }
+    Ok(())
   }
+
+  // merges 2 sibling nodes, it assumes:
+  // 1. the nodes are the same type
+  // 2. 2 nodes do not accumulate abything to an overflow
+  // i.e |first.keys| + |second.keys| <= [2*(b-1) for keys or 2*b for offsets]
+  fn merge(&self, first: Node, second: Node) -> Result<Node, Error> {
+    match first.node_type {
+      NodeType::Leaf(first_pairs) => {
+        if let NodeType::Leaf(second_pairs) = second.node_type {
+          let merged_pairs: Vec<KeyValuePair> = first_pairs.into_iter().chain(second_pairs.into_iter()).collect();
+          let node_type = NodeType::Leaf(merged_pairs);
+          Ok(Node::new(node_type, first.is_root, first.parent_offset))
+        } else {
+          Err(Error::UnexpectedError)
+        }
+      }
+      NodeType::Internal(first_offsets, first_keys) => {
+        if let NodeType::Internal(second_offsets, second_keys) = second.node_type {
+          let merged_keys: Vec<Key> = first_keys.into_iter().chain(second_keys.into_iter()).collect();
+          let merged_offsets: Vec<Offset> = first_offsets.into_iter().chain(second_offsets.into_iter()).collect();
+          let node_type = NodeType::Internal(merged_offsets, merged_keys);
+          Ok(Node::new(node_type, first.is_root, first.parent_offset))
+        } else {
+          Err(Error::UnexpectedError)
+        }
+      }
+      NodeType::Unexpected => Err(Error::UnexpectedError),
+    }
+  }
+
+  fn print_sub_tree(&mut self, prefix: String, offset: Offset) -> Result<(), Error> {
+    println!("{} Node at offset: {}", prefix, offset.0);
+    let curr_prefix = format!("{}|->", prefix);
+    let page = self.pager.get_page(&offset)?;
+    let node = Node::try_from(page)?;
+    match node.node_type {
+      NodeType::Internal(children, keys) => {
+        println!("{} Keys: {:?}", curr_prefix, keys);
+        println!("{} Children: {:?}", curr_prefix, children);
+        let child_prefix = format!("{}   |   ", prefix);
+        for child_offset in children {
+          self.print_sub_tree(child_prefix.clone(), child_offset)?;
+        }
+        Ok(())
+      }
+      NodeType::Leaf(pairs) => {
+        println!("{} Key value pairs: {:?}", curr_prefix, pairs);
+        Ok(())
+      }
+      NodeType::Unexpected => Err(Error::UnexpectedError),
+    }
+  }
+
+  /// Print is a helper for recursively printing the tree
+  pub fn print(&mut self) -> Result<(), Error> {
+    println!();
+    self.print_sub_tree("".to_string(),self.root_offset.clone())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::error::Error;
+
+    #[test]
+    fn search_works() -> Result<(), Error> {
+        use crate::btree::BTreeBuilder;
+        use crate::node_type::KeyValuePair;
+        use std::path::Path;
+
+        let mut btree = BTreeBuilder::new()
+            .path(Path::new("/tmp/db"))
+            .b_parameter(2)
+            .build()?;
+        btree.insert(KeyValuePair::new("a".to_string(), "shalom".to_string()))?;
+        btree.insert(KeyValuePair::new("b".to_string(), "hello".to_string()))?;
+        btree.insert(KeyValuePair::new("c".to_string(), "marhaba".to_string()))?;
+
+        let mut kv = btree.search("b".to_string())?;
+        assert_eq!(kv.key, "b");
+        assert_eq!(kv.value, "hello");
+
+        kv = btree.search("c".to_string())?;
+        assert_eq!(kv.key, "c");
+        assert_eq!(kv.value, "marhaba");
+
+        // Sanity check:
+        btree.print()
+    }
+
+    #[test]
+    fn insert_works() -> Result<(), Error> {
+        use crate::btree::BTreeBuilder;
+        use crate::node_type::KeyValuePair;
+        use std::path::Path;
+
+        let mut btree = BTreeBuilder::new()
+            .path(Path::new("/tmp/db"))
+            .b_parameter(2)
+            .build()?;
+        btree.insert(KeyValuePair::new("a".to_string(), "shalom".to_string()))?;
+        btree.insert(KeyValuePair::new("b".to_string(), "hello".to_string()))?;
+        btree.insert(KeyValuePair::new("c".to_string(), "marhaba".to_string()))?;
+        btree.insert(KeyValuePair::new("d".to_string(), "olah".to_string()))?;
+        btree.insert(KeyValuePair::new("e".to_string(), "salam".to_string()))?;
+        btree.insert(KeyValuePair::new("f".to_string(), "hallo".to_string()))?;
+        btree.insert(KeyValuePair::new("g".to_string(), "Konnichiwa".to_string()))?;
+        btree.insert(KeyValuePair::new("h".to_string(), "Ni hao".to_string()))?;
+        btree.insert(KeyValuePair::new("i".to_string(), "Ciao".to_string()))?;
+
+        let mut kv = btree.search("a".to_string())?;
+        assert_eq!(kv.key, "a");
+        assert_eq!(kv.value, "shalom");
+
+        kv = btree.search("b".to_string())?;
+        assert_eq!(kv.key, "b");
+        assert_eq!(kv.value, "hello");
+
+        kv = btree.search("c".to_string())?;
+        assert_eq!(kv.key, "c");
+        assert_eq!(kv.value, "marhaba");
+
+        kv = btree.search("d".to_string())?;
+        assert_eq!(kv.key, "d");
+        assert_eq!(kv.value, "olah");
+
+        kv = btree.search("e".to_string())?;
+        assert_eq!(kv.key, "e");
+        assert_eq!(kv.value, "salam");
+
+        kv = btree.search("f".to_string())?;
+        assert_eq!(kv.key, "f");
+        assert_eq!(kv.value, "hallo");
+
+        kv = btree.search("g".to_string())?;
+        assert_eq!(kv.key, "g");
+        assert_eq!(kv.value, "Konnichiwa");
+
+        kv = btree.search("h".to_string())?;
+        assert_eq!(kv.key, "h");
+        assert_eq!(kv.value, "Ni hao");
+
+        kv = btree.search("i".to_string())?;
+        assert_eq!(kv.key, "i");
+        assert_eq!(kv.value, "Ciao");
+
+        // Sanity check:
+        btree.print()
+    }
 }
