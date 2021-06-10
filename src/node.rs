@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn page_to_node_works_for_leaf_node() -> Result<(), Error> {
         const DATA_LEN: usize = LEAF_NODE_HEADER_SIZE + KEY_SIZE + VALUE_SIZE;
-        let page_data: [u8; DATA_LEN] = [
+        let page_data: [u8; DATA_LEN + 1] = [
             0x01, // Is-Root byte.
             0x02, // Leaf Node type byte.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Parent offset.
@@ -190,7 +190,7 @@ mod tests {
         use crate::node_type::Key;
 
         const DATA_LEN: usize = INTERNAL_NODE_HEADER_SIZE + 3 * PTR_SIZE + 2 * KEY_SIZE;
-        let page_data: [u8; DATA_LEN] = [
+        let page_data: [u8; DATA_LEN + 1] = [
             0x01, // Is-Root byte.
             0x01, // Internal Node type byte.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Parent offset.
