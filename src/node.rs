@@ -166,7 +166,7 @@ mod tests {
     fn page_to_node_works_for_leaf_node() -> Result<(), Error> {
         const DATA_LEN: usize = LEAF_NODE_HEADER_SIZE + KEY_SIZE + VALUE_SIZE;
         let page_data: [u8; DATA_LEN] = [
-            0x01, // Is-Root byte.
+            // 0x01, // Is-Root byte.
             0x02, // Leaf Node type byte.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Parent offset.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, // Number of Key-Value pairs.
@@ -188,9 +188,10 @@ mod tests {
     #[test]
     fn page_to_node_works_for_internal_node() -> Result<(), Error> {
         use crate::node_type::Key;
+
         const DATA_LEN: usize = INTERNAL_NODE_HEADER_SIZE + 3 * PTR_SIZE + 2 * KEY_SIZE;
         let page_data: [u8; DATA_LEN] = [
-            0x01, // Is-Root byte.
+            // 0x01, // Is-Root byte.
             0x01, // Internal Node type byte.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Parent offset.
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, // Number of children.
@@ -234,6 +235,7 @@ mod tests {
     fn split_leaf_works() -> Result<(), Error> {
         use crate::node::Node;
         use crate::node_type::KeyValuePair;
+
         let mut node = Node::new(
             NodeType::Leaf(vec![
                 KeyValuePair::new("foo".to_string(), "bar".to_string()),
@@ -275,6 +277,7 @@ mod tests {
         use crate::node_type::NodeType;
         use crate::node_type::{Key, Offset};
         use crate::page_layout::PAGE_SIZE;
+
         let mut node = Node::new(
             NodeType::Internal(
                 vec![
